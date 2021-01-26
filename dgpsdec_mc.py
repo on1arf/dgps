@@ -11,11 +11,27 @@ python3 navtexdec_mc.py [multicast-ip-address] [udp-port]
 
 Version 0.1.0: 2020/Sep/19
 Version 0.1.1: 2020/Dec/26
+Version 0.2.0: 2021/Jan/26 bugfixes for ecef calculation and type-7 message, added message types 1, 5, 31, 35 and  36 
+
 (C) Kristoff Bonne (ON1ARF), L. Van Heddegem (ON4CG)
 
 This code is distributed under GPL license v. 3.0
 https://www.gnu.org/licenses/gpl-3.0.en.html
 
+
+Information source:
+ITU Recommendation ITU-R M.823-1
+https://www.itu.int/dms_pubrec/itu-r/rec/m/R-REC-M.823-3-200603-I!!PDF-E.pdf
+https://web.archive.org/web/20150412020545/http://www.itu.int/dms_pubrec/itu-r/rec/m/R-REC-M.823-3-200603-I!!PDF-E.pdf
+
+
+Note that this is not the 'final' document.
+There are some differences between this document and the final recommendation as applied in real live transmissions.
+One notable changes are the type 27 messages:
+The station-name encoding is not done in 8 bit ascii, but
+- 2 bits type of integrity test
+- 5 bits that indicate what constellation the reference stations monitors
+- the name of the station, encoded as 9 * 7 bits ascii
 
 
 """
@@ -47,7 +63,6 @@ DEBUG=True
 # scroll down to "dgpsdec_mc" for the main function
 
 
-# calculate parity
 def __calcpar_i(word):
 	par_contr = [0xBB1F3480,0x5D8F9A40,0xAEC7CD00,0x5763E680,0x6BB1F340,0x8B7A89C0]
 
@@ -60,25 +75,19 @@ def __calcpar_i(word):
 #end def
 
 
-# type9 messages contain GPS correction informatin
-# This class contains the functions to
-# update the latest correction-information per SATid/iod
-# print then
-# cleanup all information not updated for a certain periode
-#		(either the satellite is not vivisble anymore, or the iod has changed)
 class __process_type9():
 	def __init__(self,removeold=5000):
 		self.all={}
 		self.removeold=removeold
 	#end __init
 
-	def update(self,satid,s,udre,psc,rrc,iod,tcount):
+	def update(self,satid,s,udre,psc,rrc,iod,tcount,msgtype):
 		key=(satid,iod)
 
 		#DEBUG code
 		d=self.all.get(key)
 		if d is None:
-			if DEBUG: print("T9DEBUG add",tcount,key)
+			if DEBUG: print("T{t}DEBUG add".format(t=msgtype),tcount,key)
 			ncount=1
 		else:
 			ncount=d[5]+1
@@ -87,7 +96,7 @@ class __process_type9():
 		self.all[key]=(s,udre,psc,rrc,tcount,ncount)
 	#end def
 
-	def printall(self):
+	def printall(self, msgtype):
 		def __fd(x):
 			return format(x,'>6d')
 		#end def
@@ -97,19 +106,23 @@ class __process_type9():
 
 		for k in sorted(self.all.keys()):
 			d=self.all[k]
-			print("T9",d[4],__fd(k[0]),__fd(k[1]),__fd(d[0]),__fd(d[1]),__ff(d[2]),__ff(d[3]),__fd(d[5]))
+			print("T"+str(msgtype),d[4],__fd(k[0]),__fd(k[1]),__fd(d[0]),__fd(d[1]),__ff(d[2]),__ff(d[3]),__fd(d[5]))
 		#end for
-		print("T9-----------")
-	#end printatt
 
-	def cleanup(self,cnt):
+		#only print the terminating lines if there is content
+		if self.all.keys():
+			print("T"+str(msgtype)+"-----------")
+		#end if
+	#end printall
+
+	def cleanup(self,cnt,msgtype):
 		o=cnt-self.removeold
 		tmp=self.all.copy()
 		changed=False
 		for k in self.all.keys():
 			d=self.all[k]
 			if d[4] < o:
-				if DEBUG: print("T9DEBUG del",cnt,k,d[5])
+				if DEBUG: print("T{t}DEBUG del".format(t=msgtype),cnt,k,d[5])
 				del tmp[k]
 				changed=True
 			#end if
@@ -118,7 +131,6 @@ class __process_type9():
 		if changed: self.all=tmp.copy()
 #end class
 
-# extract data from sub-octet data fields
 def __extractdata(v,fieldlist):
 	ret=[]
 
@@ -138,9 +150,7 @@ def __extractdata(v,fieldlist):
 
 
 
-# get data frames
-# receive maximum "n" times 39 bits from input stream
-# 		break out in case of parity error
+
 def __getdataframes(s, w1,w2,maxnumframe):
 	"""
 	get data frames
@@ -191,9 +201,11 @@ def __getdataframes(s, w1,w2,maxnumframe):
 #end getdataframes
 
 
-# format as hex
-def __formatashex(l):
-	return list(map(lambda x: format(x,'>09x'),l))
+def __formatashex6(l):
+	return list(map(lambda x: format(x,'>06x'),l))
+
+def __formatashex2(l):
+	return list(map(lambda x: format(x,'>02x'),l))
 
 
 
@@ -272,6 +284,7 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 
 	#type 9 processor
 	t9=__process_type9()
+	t31=__process_type9()
 
 	#endless loop, break out with 'break' at the end of the file
 
@@ -281,6 +294,7 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 	count=0
 
 	lastt9cleanup=0
+	lastt31cleanup=0
 
 
 	while True:
@@ -340,7 +354,7 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 
 		if DEBUG: print(w1t,w2t,end=' ')
 
-		print(msgtype,stationid,mod_z,seq,msglen,stationhealth, flush=True)
+		print(msgtype,stationid,round(mod_z,1),seq,msglen,stationhealth, flush=True)
 
 
 
@@ -353,17 +367,17 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 			count+=type3msglen*30
 
 			numtype3=int(type3msglen / 4) # how much messages did we receive correctly?
-			print("type  3 message received:", __formatashex(type3msg),numtype3)
+			print("type  3 message received:",msglen, __formatashex6(type3msg),numtype3)
 			
 			# did we get at a full message?
 			if numtype3 == 1:
-				m=type3msg[3]<<72|type3msg[2]<<48|type3msg[1]<<24|type3msg[0]
+				m=type3msg[0]<<72|type3msg[1]<<48|type3msg[2]<<24|type3msg[3]
 				ecefx,ecefy,ecefz=__extractdata(m,(32,32,32))
 
-				# ecefx exefy and exefz are signed
-				if ecefx > 0x800000: ecefx=-(0x1000000-ecefx)
-				if ecefy > 0x800000: ecefy=-(0x1000000-ecefz)
-				if ecefz > 0x800000: ecefz=-(0x1000000-ecefz)
+				if ecefx > 0x80000000: ecefx=-(0x100000000-ecefx)
+				if ecefy > 0x80000000: ecefy=-(0x100000000-ecefy)
+				if ecefz > 0x80000000: ecefz=-(0x100000000-ecefz)
+
 
 				# scale ecefx, ecefy, ecefz
 				ecefx /= 100
@@ -393,8 +407,77 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 			# done
 			continue
 		#end if (msgtype 6)
-		# message type 7: station information
-		if msgtype == 7:
+ 
+		# message type 5: Constellation health message (GPS)
+		if msgtype == 5:
+
+			if msglen == 0:
+				print("type 5 message received:", msglen)
+				continue # length = 0 -> do nothing
+			#end if
+
+			# get all frames
+			w1,w2,type5msg,type5msglen=__getdataframes(indata,w1,w2,msglen)
+			count+=type5msglen*30
+
+			print("type 5 message received:",msglen, __formatashex6(type5msg),type5msglen)
+
+			if not type5msg:
+				# no data received, so no data to output
+				continue
+			#end if
+
+			for m in type5msg:
+				reserved, satid, IssueOfDatalink, DataHealth, CN0, HealthEnable, NewNavData, LossOfSatWarn, TimeToUnhealthy, Unassigned=__extractdata(m,(1,5,1,3,5,1,1,1,4,2))
+
+				# C/No: 00000 = untraced, else: 24 dB(Hz) + cno
+				if CN0 > 0: CN0 += 24
+
+				# time to unhealty: scale-factor = 5 minutes (300 seconds)
+				TimeToUnhealthy *= 300
+
+				print("T5",satid,IssueOfDatalink, DataHealth, CN0, HealthEnable, NewNavData, LossOfSatWarn, TimeToUnhealthy, reserved, Unassigned)
+			#end for
+			print()
+			# done
+			continue
+		#end if (msgtype 5)
+
+		# message type 36: special message (glonass)
+		if msgtype == 36:
+
+			if msglen == 0:
+				print("type 36 message received:", msglen)
+				continue # length = 0 -> do nothing
+
+			# just get next frame 
+			w1,w2,type36msg,type36msglen=__getdataframes(indata,w1,w2,msglen)
+			count+=type36msglen*30
+
+			print("type 36 message received:",msglen, __formatashex6(type36msg),type36msglen)
+			if not type36msg:
+				# no data received, so no data to output
+				continue
+			#end if
+
+			s=[]
+			for m in type36msg:
+				strchars=__extractdata(m,(8,8,8))
+				s+=strchars
+			#end for
+
+			# convert cyrillic from 8bit time (see page 14 - table 4 of Rec, ITU-R M.823-3) to unicode
+			sc=[x if x < 128 else x + (0x410 - 0x80) for x in s]
+			print("T36",''.join(map(chr,sc)))
+			
+			# done
+			continue
+		#end if (msgtype 36)
+
+		# message type 7: station information (GPS)
+		# message type 35: station information (glonass)
+		#if msgtype == 7:
+		if msgtype in (7,35):
 			if msglen % 3 != 0: continue # length must be multiple of 3
 
 			# read up to 'msglen' frames
@@ -402,14 +485,18 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 			count+=type7msglen*30
 
 			numtype7=int(type7msglen/3) # how much messages did we receive correctly?
-			print("type  7 message received:", __formatashex(type7msg),numtype7)
+			if msgtype == 7:
+				print("type  7 message received:",msglen, __formatashex6(type7msg),numtype7)
+			else:
+				print("type 35 message received:",msglen, __formatashex6(type7msg),numtype7)
+			#end if
 
 			cnt=0
 			for _ in range(numtype7):
 				t=type7msg[cnt:cnt+3]
 				cnt+=3
 
-				m=t[2]<<48|t[1]<<24|t[0] # concat 3 frames into 1 message
+				m=t[0]<<48|t[1]<<24|t[2] # concat 3 frames into 1 message
 				lat,lon,brange,freq,health,statid,bitrate,modmode,synctype,bcoding=__extractdata(m,(16,16,10,12,3,9,3,1,1,1))
 
 				# lat and lon are signed
@@ -424,13 +511,78 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 				# bitrate is table (negative values indicates an error)
 				bitrate=(25,50,100,-3,150,200,-6,-7)[bitrate]
 
-				print("T7",lat,lon,brange,freq,health,statid,bitrate,modmode,synctype,bcoding)
+				print("T"+str(msgtype),round(lat,7),round(lon,7),brange,freq,health,statid,bitrate,modmode,synctype,bcoding)
 			#end for
 
 			# done
 			continue
 		# end if (msgtype 7)
 
+
+		# message type 1: GPS correction data
+		if msgtype == 1:
+			# type 1 messages are length n*5 + (0, 2 or 4)
+			expectedlen_t19 = (0,2,4)
+			if msglen % 5 not in expectedlen_t19: continue #expect message length of n * 5 + 0, 2, 4
+
+			# read up to "msglen" frames
+			w1,w2,type1msg,type1msglen=__getdataframes(indata,w1,w2,msglen)
+
+
+			type1msglenrem5=type1msglen%5
+			type1msglendiv5=int(type1msglen/5)
+
+			count+=type1msglen*30
+
+			numtype1=type1msglendiv5*3+(0, 0, 1, 1, 2)[type1msglenrem5]  # how much messages did we receive correctly?
+
+			print("type  1 message received:",msglen, __formatashex6(type1msg),numtype1)
+
+			# parse every message
+			for msgt1 in range(numtype1):
+				d3=int(msgt1/3)
+				offset=d3*5
+				r3=msgt1%3
+				
+				if r3 == 0:
+					m=type1msg[0+offset]<<24|type1msg[1+offset]
+					fieldlist=(1,2,5,16,8,8,8)
+				elif r3 == 1:
+					m=type1msg[1+offset]<<48|type1msg[2+offset]<<24|type1msg[3+offset]
+					fieldlist=(1,2,5,16,8,8,16)
+				else:
+					# r3 == 2:
+					m=type1msg[3+offset]<<24|type1msg[4+offset]
+					fieldlist=(1,2,5,16,8,8,0)
+				#end else - elif - if
+
+				s, udre, satid, psc, rrc, iod,_= __extractdata(m,fieldlist)
+
+				# psc and rrc are signed
+				if psc >=0x8000: psc = -(0x10000-psc)
+				if rrc >=0x80: rrc = -(0x100-rrc)
+
+				# scale and round psc and rrc, depending on value of scale-factor s
+				psc = round(psc*0.02,2) if s == 0 else round(psc*0.32,2)
+				rrc = round(rrc*0.002,3) if s == 0 else round(rrc*0.032,3)
+
+				print("T1Sat ",satid,s,udre,psc,rrc,iod)
+				t9.update(satid,s,udre,psc,rrc,iod,count,1)
+
+			#end for
+
+			# print out all information about all known satellites
+			t9.printall(1)
+
+			# do a cleanup of the satellite-list every 1000 words
+			if count - lastt9cleanup > 1000:
+				lastt9cleanup=count
+				t9.cleanup(count,1)
+			#end if
+
+			# done
+			continue
+		#end if (msgtype 1)
 
 		# message type 9: GPS correction data
 		if msgtype == 9:
@@ -443,7 +595,7 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 
 			numtype9=(0,0,1,1,2,3)[type9msglen]  # how much messages did we receive correctly?
 
-			print("type  9 message received:", __formatashex(type9msg),numtype9)
+			print("type  9 message received:",msglen, __formatashex6(type9msg),numtype9)
 
 			# parse every message
 			for msgt9 in range(numtype9):
@@ -470,22 +622,86 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 				rrc = round(rrc*0.002,3) if s == 0 else round(rrc*0.032,3)
 
 				print("T9Sat ",satid,s,udre,psc,rrc,iod)
-				t9.update(satid,s,udre,psc,rrc,iod,count)
+				t9.update(satid,s,udre,psc,rrc,iod,count,9)
 
 			#end for
 
 			# print out all information about all known satellites
-			t9.printall()
+			t9.printall(9)
 
 			# do a cleanup of the satellite-list every 1000 words
 			if count - lastt9cleanup > 1000:
 				lastt9cleanup=count
-				t9.cleanup(count)
+				t9.cleanup(count,9)
 			#end if
 
 			# done
 			continue
 		#end if (msgtype 9)
+
+		# message type 31: glonass correction data
+		if msgtype == 31:
+			# type 31 messages are length n*5 + (0, 2 or 4)
+			expectedlen_t31 = (0,2,4)
+			if msglen % 5 not in expectedlen_t31: continue #expect message length of n * 5 + 0, 2, 4
+
+			# read up to "msglen" frames
+			w1,w2,type31msg,type31msglen=__getdataframes(indata,w1,w2,msglen)
+
+
+			type31msglenrem5=type31msglen%5
+			type31msglendiv5=int(type31msglen/5)
+
+			count+=type31msglen*30
+
+			numtype31=type31msglendiv5*3+(0, 0, 1, 1, 2)[type31msglenrem5]  # how much messages did we receive correctly?
+
+			print("type 31 message received:",msglen, __formatashex6(type31msg),numtype31)
+
+			# parse every message
+			for msgt31 in range(numtype31):
+				d3=int(msgt31/3)
+				offset=d3*5
+				r3=msgt31%3
+				
+				if r3 == 0:
+					m=type31msg[0+offset]<<24|type31msg[1+offset]
+					fieldlist=(1,2,5,16,8,1,7,8)
+				elif r3 == 1:
+					m=type31msg[1+offset]<<48|type31msg[2+offset]<<24|type31msg[3+offset]
+					fieldlist=(1,2,5,16,8,1,7,16)
+				else:
+					# r3 == 2:
+					m=type31msg[3+offset]<<24|type31msg[4+offset]
+					fieldlist=(1,2,5,16,8,1,7,0)
+				#end else - elif - if
+
+				s, udre, satid, psc, rrc,r, tb,_= __extractdata(m,fieldlist)
+
+				# psc and rrc are signed
+				if psc >=0x8000: psc = -(0x10000-psc)
+				if rrc >=0x80: rrc = -(0x100-rrc)
+
+				# scale and round psc and rrc, depending on value of scale-factor s
+				psc = round(psc*0.02,2) if s == 0 else round(psc*0.32,2)
+				rrc = round(rrc*0.002,3) if s == 0 else round(rrc*0.032,3)
+
+				print("T31Sat ",satid,s,udre,psc,rrc,r,tb)
+				t31.update(satid,s,udre,psc,rrc,tb,count,31)
+
+			#end for
+			# print out all information about all known satellites
+			t31.printall(31)
+
+			# do a cleanup of the satellite-list every 1000 words
+			if count - lastt31cleanup > 1000:
+				lastt31cleanup=count
+				t31.cleanup(count,31)
+			#end if
+
+			# done
+			continue
+		#end if
 
 		# message type 27: radio almanac (information about station and other stations in same region)
 		if msgtype == 27:
@@ -496,7 +712,7 @@ def dgpsdec_mc(mcip=defaultip, mcport=defaultport):
 			count+=type27msglen*30
 
 			numtype27=int(type27msglen/6)  # how much messages did we receive correctly?
-			print("type 27 message received:", __formatashex(type27msg),numtype27)
+			print("type 27 message received:",msglen, __formatashex6(type27msg),numtype27)
 
 			cnt=0
 			# go over every message
